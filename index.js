@@ -1,38 +1,46 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, makeInMemoryStore } = require('@adiwajshing/baileys');
-const fs = require('fs');
-const pino = require('pino');
+import makeWASocket, { DisconnectReason, useMultiFileAuthState, makeInMemoryStore } from "@whiskeysockets/baileys";
+import { Boom } from "@hapi/boom";
+import pino from "pino";
+import { join } from "path";
+import fs from "fs";
+import handler from "./lib/handler.js";
+import setting from "./setting.js";
 
-async function startBot() {
-  const { state, saveCreds } = await useMultiFileAuthState('./session');
+const store = makeInMemoryStore({ logger: pino().child({ level: "silent", stream: "store" }) });
+const sessionFolder = "./session";
+
+const startBot = async () => {
+  const { state, saveCreds } = await useMultiFileAuthState(sessionFolder);
 
   const sock = makeWASocket({
-    logger: pino({ level: 'silent' }),
+    logger: pino({ level: "silent" }),
     printQRInTerminal: true,
     auth: state,
+    syncFullHistory: false,
   });
 
-  sock.ev.on('messages.upsert', async ({ messages }) => {
-    const msg = messages[0];
-    if (!msg.message || msg.key.remoteJid === 'status@broadcast') return;
+  store.bind(sock.ev);
 
-    const text = msg.message.conversation || "";
-    if (text.startsWith('.ping')) {
-      await sock.sendMessage(msg.key.remoteJid, { text: 'Bot aktif di Windows 7 ✅' });
+  sock.ev.on("messages.upsert", async ({ messages, type }) => {
+    if (type !== "notify") return;
+    for (let msg of messages) {
+      if (!msg.message || msg.key && msg.key.remoteJid === "status@broadcast") return;
+      await handler(sock, msg, setting);
     }
   });
 
-  sock.ev.on('creds.update', saveCreds);
+  sock.ev.on("creds.update", saveCreds);
 
-  sock.ev.on('connection.update', (update) => {
+  sock.ev.on("connection.update", (update) => {
     const { connection, lastDisconnect } = update;
-    if (connection === 'close') {
-      const shouldReconnect = lastDisconnect && lastDisconnect.error && lastDisconnect.error.output &&
-        lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut;
+    if (connection === "close") {
+      const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+      console.log("Connection closed. Reconnecting...", shouldReconnect);
       if (shouldReconnect) startBot();
-    } else if (connection === 'open') {
-      console.log('✅ Bot berhasil terhubung');
+    } else if (connection === "open") {
+      console.log("Bot connected!");
     }
   });
-}
+};
 
 startBot();
